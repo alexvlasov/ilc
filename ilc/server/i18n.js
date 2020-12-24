@@ -1,6 +1,8 @@
 const Cookie = require('cookie');
 const Intl = require('ilc-sdk/app').Intl;
-const {intlSchema} = require('ilc-sdk/dist/server/IlcProtocol'); //"Private" import
+const {intlSchema} = require('ilc-sdk/dist/server/IlcProtocol'); // "Private" import
+
+const pluginManager = require('./pluginManager/factory');
 const cookieEncoder = require('../common/i18nCookie');
 
 const onRequestFactory = (i18nConfig) => async (req, reply) => {
@@ -8,24 +10,30 @@ const onRequestFactory = (i18nConfig) => async (req, reply) => {
         return; // Excluding system routes
     }
 
-    let currI18nConf = { ...i18nConfig.default };
+    let currI18nConf = {...i18nConfig.default};
 
     const i18nCookie = Cookie.parse(req.headers.cookie || '')[cookieEncoder.name];
     if (i18nCookie) {
         const decodedCookie = cookieEncoder.decode(i18nCookie);
         currI18nConf.locale = Intl.getCanonicalLocale(decodedCookie.locale, i18nConfig.supported.locale) || currI18nConf.locale;
         currI18nConf.currency = i18nConfig.supported.currency.includes(decodedCookie.currency) ? decodedCookie.currency : currI18nConf.currency;
+    } else {
+        const routeLocale = Intl.parseUrl(i18nConfig, req.raw.url);
+        if (routeLocale.locale !== i18nConfig.default.locale) { // URL can override locale only if it's not-default one
+            currI18nConf.locale = routeLocale.locale;
+        }
     }
 
-    //TODO: add ability to "init" i18n configuration not from default values, but rather by use of the IP, "accept-language", etc..
-    // Interface: async (req: http.IncomingMessage, currI18nConf): {locale?: string, currency?: string}
-
-    const routeLocale = Intl.parseUrl(i18nConfig, req.raw.url);
-    if (routeLocale.locale !== i18nConfig.default.locale) { // URL can override locale only if it's not-default one
-        currI18nConf.locale = routeLocale.locale;
+    const i18nParamsDetection = pluginManager.getI18nParamsDetectionPlugin();
+    if (i18nParamsDetection !== null) {
+        currI18nConf = await i18nParamsDetection.getI18nConfig(req.raw, {
+            parseUrl: (url) => Intl.parseUrl(i18nConfig, url),
+            localizeUrl: (url, {locale}) => Intl.localizeUrl(i18nConfig, url, {locale}),
+            getCanonicalLocale: (locale) => Intl.getCanonicalLocale(locale, i18nConfig.supported.locale),
+        }, currI18nConf);
     }
 
-    const fixedUrl = Intl.localizeUrl(i18nConfig, req.raw.url, { locale: currI18nConf.locale });
+    const fixedUrl = Intl.localizeUrl(i18nConfig, req.raw.url, {locale: currI18nConf.locale});
     if (fixedUrl !== req.raw.url) {
         reply.redirect(fixedUrl);
         return;
